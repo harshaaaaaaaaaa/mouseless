@@ -1,11 +1,29 @@
 import { useRef, useState, useEffect } from "react";
 import { dataset } from "../utils/data";
 
- export default function Keys({ count, setCount,result,setresult}) {
+export default function Keys({ count, setCount, result, setresult }) {
     
     const [keyColors, setKeyColors] = useState([]); // Stores colors for each key
     const toggle = useRef(0); // Tracks the current key index
     const keyRefs = useRef([]); // Ref for key buttons
+    const [isExerciseMode, setIsExerciseMode] = useState(true); // Track if we're in exercise mode
+    const [tauriProcess, setTauriProcess] = useState(null);
+    
+    // Initialize Tauri API when component mounts
+    useEffect(() => {
+        const loadTauriAPI = async () => {
+            try {
+                // Dynamically import Tauri API to avoid errors in development mode
+                const process = await import('@tauri-apps/api/process');
+                setTauriProcess({ exit: process.exit });
+            } catch (e) {
+                // In development mode or if Tauri is not available
+                setTauriProcess({ exit: () => console.log("Exit called (dev mode)") });
+            }
+        };
+        
+        loadTauriAPI();
+    }, []);
 
     useEffect(() => {
         // Reset colors when dataset[count] changes
@@ -15,50 +33,99 @@ import { dataset } from "../utils/data";
 
     useEffect(() => {
         const handleKeyDown = (event) => {
-            if (!keyRefs.current.length) return;
+            // Always check for ESC key to exit the application
+            if (event.key === "Escape" && tauriProcess) {
+                // Exit the application
+                tauriProcess.exit(0);
+                return;
+            }
+            
+            // Only process shortcuts when in exercise mode
+            if (!isExerciseMode || !keyRefs.current.length) return;
+            
+            // Prevent default behavior for all keyboard shortcuts during exercises
+            // This will block system-level shortcuts from activating
+            if (event.ctrlKey || event.altKey || event.metaKey || event.shiftKey) {
+                event.preventDefault();
+                event.stopPropagation();
+            }
 
             setKeyColors((prevColors) => {
                 const newColors = [...prevColors]; // Copy array to avoid direct mutation
-
-                if (keyRefs.current[toggle.current]?.textContent === ((event.key==="Control")?"Ctrl":event.key.toUpperCase())) {
-                  
+                
+                // For multi-key shortcuts, handle special cases
+                const isFirstKey = toggle.current === 0;
+                const firstKeyExpected = dataset[count]?.key[0] || "";
+                const currentExpectedKey = keyRefs.current[toggle.current]?.textContent;
+                
+                // Handle special key matching
+                let isCorrectKey = false;
+                
+                if (currentExpectedKey === "Ctrl") {
+                    isCorrectKey = event.key === "Control";
+                } else if (currentExpectedKey === "Alt") {
+                    isCorrectKey = event.key === "Alt";
+                } else if (currentExpectedKey === "Shift") {
+                    isCorrectKey = event.key === "Shift";
+                } else {
+                    // For second keys in a combination or single keys
+                    const isSecondKeyInCombo = !isFirstKey && 
+                        ((firstKeyExpected === "Ctrl" && event.ctrlKey) ||
+                         (firstKeyExpected === "Alt" && event.altKey) ||
+                         (firstKeyExpected === "Shift" && event.shiftKey));
+                    
+                    isCorrectKey = isFirstKey 
+                        ? currentExpectedKey === event.key.toUpperCase()
+                        : isSecondKeyInCombo && currentExpectedKey === event.key.toUpperCase();
+                }
+                
+                if (isCorrectKey) {
                     newColors[toggle.current] = "green"; // Correct key press
-
-                    toggle.current = (toggle.current < keyRefs.current.length)?toggle.current+1:toggle.current;
-
+                    toggle.current = (toggle.current < keyRefs.current.length) ? toggle.current + 1 : toggle.current;
                 } else {
                     newColors[toggle.current] = "red"; // Incorrect key press
                 }
-
-               
-
+                
                 return newColors;
             });
         };
 
+        const handleKeyUp = (event) => {
+            // Reset the multi-key combo state if necessary
+            const firstKeyExpected = dataset[count]?.key[0] || "";
+            if ((firstKeyExpected === "Ctrl" && event.key === "Control") ||
+                (firstKeyExpected === "Alt" && event.key === "Alt") ||
+                (firstKeyExpected === "Shift" && event.key === "Shift")) {
+                
+                // Only reset if we haven't completed the sequence
+                if (toggle.current === 1) {
+                    setKeyColors(new Array(dataset[count]?.key.length).fill("white"));
+                    toggle.current = 0;
+                }
+            }
+        };
+
+        // Attach event listeners
         document.addEventListener("keydown", handleKeyDown);
+        document.addEventListener("keyup", handleKeyUp);
 
-
-
+        // Cleanup event listeners
         return () => {
             document.removeEventListener("keydown", handleKeyDown);
+            document.removeEventListener("keyup", handleKeyUp);
         };
-    }, []);
+    }, [count, isExerciseMode, tauriProcess]);
 
-
-    /// after all the key right press count is increased by 1
-     
+    // After all keys are pressed correctly, increase the count
     useEffect(() => {
         if (keyColors.length && keyColors.every(color => color === "green")) {
-
             setresult("correct");
             setTimeout(() => {
                 setCount((count) => (count + 1) % dataset.length);
                 setresult("");
             }, 1200); 
         }
-    }, [keyColors, setCount]);
-
+    }, [keyColors, setCount, setresult]);
 
     return (
         <>
@@ -76,8 +143,6 @@ import { dataset } from "../utils/data";
            {item}
           </div>
 ))}
-         
-    
         </>
     );
 }
