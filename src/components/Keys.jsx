@@ -7,23 +7,6 @@ export default function Keys({ count, setCount, result, setresult }) {
     const toggle = useRef(0); // Tracks the current key index
     const keyRefs = useRef([]); // Ref for key buttons
     const [isExerciseMode, setIsExerciseMode] = useState(true); // Track if we're in exercise mode
-    const [tauriProcess, setTauriProcess] = useState(null);
-    
-    // Initialize Tauri API when component mounts
-    useEffect(() => {
-        const loadTauriAPI = async () => {
-            try {
-                // Dynamically import Tauri API to avoid errors in development mode
-                const process = await import('@tauri-apps/api/process');
-                setTauriProcess({ exit: process.exit });
-            } catch (e) {
-                // In development mode or if Tauri is not available
-                setTauriProcess({ exit: () => console.log("Exit called (dev mode)") });
-            }
-        };
-        
-        loadTauriAPI();
-    }, []);
 
     useEffect(() => {
         // Reset colors when dataset[count] changes
@@ -34,9 +17,10 @@ export default function Keys({ count, setCount, result, setresult }) {
     useEffect(() => {
         const handleKeyDown = (event) => {
             // Always check for ESC key to exit the application
-            if (event.key === "Escape" && tauriProcess) {
-                // Exit the application
-                tauriProcess.exit(0);
+            if (event.key === "Escape") {
+                // For ESC key, we don't need to import Tauri API
+                // Just close the current window which has the same effect
+                window.close();
                 return;
             }
             
@@ -114,7 +98,7 @@ export default function Keys({ count, setCount, result, setresult }) {
             document.removeEventListener("keydown", handleKeyDown);
             document.removeEventListener("keyup", handleKeyUp);
         };
-    }, [count, isExerciseMode, tauriProcess]);
+    }, [count, isExerciseMode]);
 
     // After all keys are pressed correctly, increase the count
     useEffect(() => {
