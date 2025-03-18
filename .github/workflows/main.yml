@@ -1,253 +1,62 @@
-name: Publish Mouseless App
+name: 'publish'
+
 on:
   push:
-    tags:
-      - 'v*'
-    branches: '*'
-  workflow_dispatch:
+    branches:
+      - release
 
-env:
-  APP_NAME: "mouseless"
+# This workflow will trigger on each push to the `release` branch to create or update a GitHub release, build your app, and upload the artifacts to the release.
 
 jobs:
-  changelog:
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-
-      - name: Build changelog
-        id: build_changelog
-        run: |
-          # Get the previous tag or default to first commit if no previous tag exists
-          PREV_TAG=$(git tag --list 'v*' --sort=-v:refname | head -n 2 | tail -n 1 || git rev-list --max-parents=0 HEAD)
-          # Handle case where there's no previous tag
-          if [ -z "$PREV_TAG" ]; then
-            PREV_TAG=$(git rev-list --max-parents=0 HEAD)
-          fi
-          CURRENT_TAG=${{ github.ref_name }}
-          # If not a tag, use HEAD
-          if [ "${{ github.ref_type }}" != "tag" ]; then
-            CURRENT_TAG="HEAD"
-          fi
-          echo "Building changelog from $PREV_TAG to $CURRENT_TAG"
-          CHANGELOG=$(git log $PREV_TAG..$CURRENT_TAG --pretty=format:"- %s")
-          echo "changelog<<EOF" >> $GITHUB_OUTPUT
-          echo "$CHANGELOG" >> $GITHUB_OUTPUT
-          echo "EOF" >> $GITHUB_OUTPUT
-    outputs:
-      changelog: ${{ steps.build_changelog.outputs.changelog }}
-
-  release:
+  publish-tauri:
+    permissions:
+      contents: write
     strategy:
       fail-fast: false
       matrix:
         include:
-          - platform: 'macos-latest'
-            target: 'aarch64-apple-darwin'
-            name: 'macOS-arm64'
-          - platform: 'macos-latest'
-            target: 'x86_64-apple-darwin'
-            name: 'macOS-x64'
-          - platform: 'ubuntu-latest'
-            target: ''
-            name: 'linux'
+          - platform: 'macos-latest' # for Arm based macs (M1 and above).
+            args: '--target aarch64-apple-darwin'
+          - platform: 'macos-latest' # for Intel based macs.
+            args: '--target x86_64-apple-darwin'
+          - platform: 'ubuntu-22.04' # for Tauri v1 you could replace this with ubuntu-20.04.
+            args: ''
           - platform: 'windows-latest'
-            target: ''
-            name: 'windows'
-    runs-on: ${{ matrix.platform }}
-    needs: [changelog]
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
+            args: ''
 
-      - name: Setup Node.js
+    runs-on: ${{ matrix.platform }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: setup node
         uses: actions/setup-node@v4
         with:
-          node-version: 'lts/*'
-          cache: 'npm'
+          node-version: lts/*
 
-      - name: Install Rust stable
+      - name: install Rust stable
         uses: dtolnay/rust-toolchain@stable
         with:
-          targets: ${{ matrix.platform == 'macos-latest' && format('{0}', matrix.target) || '' }}
+          # Those targets are only used on macos runners so it's in an `if` to slightly speed up windows and linux builds.
+          targets: ${{ matrix.platform == 'macos-latest' && 'aarch64-apple-darwin,x86_64-apple-darwin' || '' }}
 
-      - name: Rust cache
-        uses: swatinem/rust-cache@v2
-        with:
-          workspaces: './src-tauri -> target'
-
-      - name: Install Ubuntu dependencies
-        if: matrix.platform == 'ubuntu-latest'
+      - name: install dependencies (ubuntu only)
+        if: matrix.platform == 'ubuntu-22.04' # This must match the platform value defined above.
         run: |
-          sudo apt update
-          # Add Jammy repository for libwebkit2gtk-4.0-dev
-          echo "deb http://gb.archive.ubuntu.com/ubuntu jammy main" | sudo tee -a /etc/apt/sources.list.d/jammy-packages.list
-          sudo apt update
-          sudo apt install -y libgtk-3-dev librsvg2-dev patchelf libx11-dev libxdo-dev
-          # Install libwebkit2gtk-4.0-dev from Jammy repository
-          sudo apt install -y libwebkit2gtk-4.1.so libappindicator3-dev
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf
+        # webkitgtk 4.0 is for Tauri v1 - webkitgtk 4.1 is for Tauri v2.
+        # You can remove the one that doesn't apply to your app to speed up the workflow a bit.
 
-      - name: Install frontend dependencies
-        run: npm install
+      - name: install frontend dependencies
+        run: yarn install # change this to npm, pnpm or bun depending on which one you use.
 
-      # CI Builds for pull requests and branch pushes
-      - name: CI Build
-        if: ${{ github.ref_type == 'branch' }}
-        env:
-          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
-          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
-        run: |
-          npm run build
-          cd src-tauri && cargo tauri build ${{ matrix.target != '' && format('--target {0}', matrix.target) || '' }}
-
-      # Upload Windows CI build artifacts
-      - name: Upload Windows artifacts
-        if: ${{ github.ref_type == 'branch' && matrix.platform == 'windows-latest' }}
-        uses: actions/upload-artifact@v4
-        with:
-          name: ${{ env.APP_NAME }}-${{ matrix.name }}-ci-build
-          path: |
-            src-tauri/target/release/bundle/msi/*.msi
-            src-tauri/target/release/bundle/nsis/*.exe
-          retention-days: 7
-
-      # Upload macOS CI build artifacts
-      - name: Upload macOS artifacts
-        if: ${{ github.ref_type == 'branch' && matrix.platform == 'macos-latest' }}
-        uses: actions/upload-artifact@v4
-        with:
-          name: ${{ env.APP_NAME }}-${{ matrix.name }}-ci-build
-          path: |
-            src-tauri/target/${{ matrix.target != '' && format('{0}/', matrix.target) || '' }}release/bundle/dmg/*.dmg
-          retention-days: 7
-
-      # Upload Linux CI build artifacts
-      - name: Upload Linux artifacts
-        if: ${{ github.ref_type == 'branch' && matrix.platform == 'ubuntu-latest' }}
-        uses: actions/upload-artifact@v4
-        with:
-          name: ${{ env.APP_NAME }}-${{ matrix.name }}-ci-build
-          path: |
-            src-tauri/target/release/bundle/deb/*.deb
-            src-tauri/target/release/bundle/appimage/*.AppImage
-          retention-days: 7
-
-      # Create GitHub release for tags
-      - name: Build Tauri app for release
-        uses: tauri-apps/tauri-action@v0
-        if: ${{ github.ref_type == 'tag' }}
+      - uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
-          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         with:
-          tagName: ${{ github.ref_name }}
-          releaseName: "${{ env.APP_NAME }} ${{ github.ref_name }}"
-          releaseBody: |
-            ## What's Changed
-            ${{ needs.changelog.outputs.changelog }}
-            
-            ## Installation
-            Download the appropriate package for your operating system.
+          tagName: app-v__VERSION__ # the action automatically replaces \_\_VERSION\_\_ with the app version.
+          releaseName: 'App v__VERSION__'
+          releaseBody: 'See the assets to download this version and install.'
           releaseDraft: true
-          prerelease: ${{ contains(github.ref, '-alpha') || contains(github.ref, '-beta') || contains(github.ref, '-rc') }}
-          args: ${{ matrix.target != '' && format('--target {0}', matrix.target) || '' }}
-
-  arch-linux:
-    runs-on: ubuntu-latest
-    needs: [changelog]
-    if: github.ref_type == 'tag' || github.ref_type == 'branch'
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-
-      - name: Get app version
-        id: get_version
-        run: |
-          VERSION=$(grep version src-tauri/tauri.conf.json | head -1 | sed -E 's/."version": "([^"]+)"./\1/')
-          echo "version=$VERSION" >> $GITHUB_OUTPUT
-
-      - name: Build Arch Linux package
-        run: |
-          docker run --rm -v $PWD:/app -w /app archlinux:latest bash -c "
-          pacman -Syu --noconfirm
-          pacman -S --noconfirm base-devel git nodejs npm rustup webkit2gtk gtk3 libappindicator-gtk3 libxss
-          rustup default stable
-          cd /app
-          npm install
-          npm run build
-          cd src-tauri && cargo tauri build
-          mkdir -p /app/arch-package
-          cp /app/src-tauri/target/release/${{ env.APP_NAME }} /app/arch-package/
-          "
-          
-      - name: Create PKGBUILD
-        run: |
-          mkdir -p arch-package
-          cat > arch-package/PKGBUILD << EOF
-          # Maintainer: Mouseless App Team
-          pkgname=${{ env.APP_NAME }}
-          pkgver=${{ steps.get_version.outputs.version }}
-          pkgrel=1
-          pkgdesc="Mouseless Application"
-          arch=('x86_64')
-          url="https://github.com/${GITHUB_REPOSITORY}"
-          license=('MIT')
-          depends=('gtk3' 'webkit2gtk' 'libappindicator-gtk3')
-          source=("local://${{ env.APP_NAME }}")
-          sha256sums=('SKIP')
-          
-          package() {
-            install -Dm755 "\$srcdir/${{ env.APP_NAME }}" "\$pkgdir/usr/bin/${{ env.APP_NAME }}"
-            
-            # Create desktop entry
-            mkdir -p "\$pkgdir/usr/share/applications"
-            cat > "\$pkgdir/usr/share/applications/${{ env.APP_NAME }}.desktop" << EOL
-          [Desktop Entry]
-          Type=Application
-          Name=${{ env.APP_NAME }}
-          Exec=${{ env.APP_NAME }}
-          Icon=${{ env.APP_NAME }}
-          Categories=Utility;
-          EOL
-          }
-          EOF
-          
-      - name: Build Arch package
-        if: github.ref_type == 'branch'
-        run: |
-          docker run --rm -v $PWD:/app -w /app/arch-package archlinux:latest bash -c "
-          pacman -Syu --noconfirm
-          pacman -S --noconfirm base-devel
-          makepkg -f
-          "
-          
-      - name: Upload Arch Linux artifacts
-        if: github.ref_type == 'branch'
-        uses: actions/upload-artifact@v4
-        with:
-          name: ${{ env.APP_NAME }}-archlinux-ci-build
-          path: arch-package/*.pkg.tar.zst
-          retention-days: 7
-          
-      - name: Publish Arch Linux package to release
-        if: github.ref_type == 'tag'
-        run: |
-          docker run --rm -v $PWD:/app -w /app/arch-package archlinux:latest bash -c "
-          pacman -Syu --noconfirm
-          pacman -S --noconfirm base-devel
-          makepkg -f
-          "
-          
-          # Install GitHub CLI and upload package
-          curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg | sudo dd of=/usr/share/keyrings/githubcli-archive-keyring.gpg
-          echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" | sudo tee /etc/apt/sources.list.d/github-cli.list > /dev/null
-          sudo apt update
-          sudo apt install -y gh
-          
-          gh release upload ${{ github.ref_name }} arch-package/*.pkg.tar.zst
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          prerelease: false
+          args: ${{ matrix.args }}
